@@ -3,7 +3,6 @@
 from collections.abc import Mapping
 from typing import Any
 
-import torch
 from vllm.inputs import TextPrompt
 
 from vllm_omni.inputs.data import OmniTokensPrompt
@@ -26,12 +25,12 @@ def ar2dit(
         addi_info = prompt["additional_information"]
         image_height = addi_info["image_height"][0]
         image_width = addi_info["image_width"][0]
-        text_guidance_scale = addi_info["text_guidance_scale"][0]
-        cfg_range = addi_info["cfg_range"]
-        num_inference_steps = addi_info["num_inference_steps"][0]
-        gen_vocab_start_index = addi_info["visual_token_start_id"][0]
-        # ["<|image_pad|>", "<|video_pad|>", "<|vision_start|>", "<|vision_end|>"]
-        visual_ids = addi_info["visual_ids"]
+        # Sampling knobs now arrive on the DiT stage via extra_body -> extra_args.
+        # Keep a legacy fallback to additional_information for the bespoke-example path;
+        # defaults below mirror the former bespoke script's argparse defaults.
+        text_guidance_scale = addi_info.get("text_guidance_scale", [9.0])[0]
+        cfg_range = addi_info.get("cfg_range", [0.0, 1.0])
+        num_inference_steps = addi_info.get("num_inference_steps", [50])[0]
 
         prompt_token_ids = ar_output.prompt_token_ids
         # exclude the last token because it has no corresponding hidden state
@@ -52,36 +51,14 @@ def ar2dit(
             f"Hidden states length mismatch: expected {len(prompt_token_ids) + len(gen_token_ids)}, got {hidden_total}"
         )
 
-        mask_device = full_hidden_states.device
-        full_token_ids_t = torch.tensor(full_token_ids, dtype=torch.long, device=mask_device)
-        attention_mask = torch.ones_like(full_token_ids_t, dtype=torch.bool)
-
-        pos = torch.arange(full_token_ids_t.shape[0], device=mask_device)
-        answer_start_index = len(prompt_token_ids)
-        questions_mask = pos < answer_start_index
-        answers_mask = ~questions_mask
-
-        gen_token_mask = full_token_ids_t >= gen_vocab_start_index
-
-        visual_token_mask = torch.isin(
-            full_token_ids_t,
-            torch.tensor(visual_ids, dtype=torch.long, device=mask_device),
-        )
-
-        text_condition_token_mask = questions_mask & ~(visual_token_mask | gen_token_mask) & attention_mask
-        image_condition_token_mask = answers_mask & gen_token_mask & attention_mask
-
-        text_condition = full_hidden_states[text_condition_token_mask]
-        image_condition = full_hidden_states[image_condition_token_mask]
-
-        text_prompt_embeds = text_condition.to(dtype=torch.float32).contiguous()
-        image_prompt_embeds = image_condition.to(dtype=torch.float32).contiguous()
-
+        # The text/image condition split is performed in the DiT pipeline, which sources
+        # the distinguishing token ids (gen_vocab_start_index, vision placeholder ids)
+        # from the model config. Pass through the raw AR hidden states + token ids and
+        # the question/answer boundary so the pipeline can reconstruct the masks.
         additional_information = {
-            "text_prompt_embeds": text_prompt_embeds,
-            "text_prompt_embeds_shape": list(text_prompt_embeds.shape),
-            "image_prompt_embeds": image_prompt_embeds,
-            "image_prompt_embeds_shape": list(image_prompt_embeds.shape),
+            "full_hidden_states": full_hidden_states,
+            "full_token_ids": full_token_ids,
+            "answer_start_index": [len(prompt_token_ids)],
             "image_height": [int(image_height)],
             "image_width": [int(image_width)],
             "text_guidance_scale": [float(text_guidance_scale)],
