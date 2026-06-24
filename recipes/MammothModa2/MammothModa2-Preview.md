@@ -38,17 +38,27 @@ flags. Image size uses the standard `--height` / `--width` flags.
 ## Hardware Support
 
 The default stage config runs both the AR and DiT stages on a single GPU
-(`devices: "0"`). A single GPU with ≥40 GB of VRAM is sufficient.
+(`devices: "0"`). The committed `gpu_memory_utilization` split (stage-0 AR `0.5`,
+stage-1 DiT `0.3`) is sized for an ~80 GB GPU. The model also fits on a 48 GB GPU
+after rebalancing the split so the AR weights (~23 GB) leave room for the KV
+cache — see the note under *1x L40S 48GB*.
 
 ## GPU
 
 ### 1x L40S 48GB
 
+> **48 GB config adjustment:** the committed
+> `vllm_omni/model_executor/stage_configs/mammoth_moda2.yaml` uses
+> `gpu_memory_utilization` 0.5 / 0.3 (sized for ~80 GB). To fit on a 48 GB L40S,
+> set the stage-0 (AR) value to `0.8` and the stage-1 (DiT) value to `0.16`
+> before running. (On an ~80 GB GPU, leave the defaults unchanged.)
+
 #### Environment
 
 - OS: Linux
 - Python: Match the repository requirements for your checkout
-- Driver / runtime: NVIDIA CUDA environment with one ≥40 GB GPU (e.g. L40S 48 GB)
+- Driver / runtime: NVIDIA CUDA environment with one L40S 48 GB (verified) or an
+  ~80 GB GPU for the default config
 - vLLM version: Match the repository requirements for your checkout
 - vLLM-Omni version or commit: Use the commit you are deploying from
 
