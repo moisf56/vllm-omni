@@ -8,6 +8,29 @@ from vllm.inputs import TextPrompt
 from vllm_omni.inputs.data import OmniTokensPrompt
 
 
+def _as_dict(prompt: Any) -> dict[str, Any]:
+    """Coerce an original-stage prompt to a dict.
+
+    It may arrive as a dict, a NamedTuple/object, or a bare string depending on
+    the calling flow (the shared text_to_image example vs the bespoke script).
+    """
+    if isinstance(prompt, dict):
+        return prompt
+    if hasattr(prompt, "_asdict"):
+        return prompt._asdict()
+    if hasattr(prompt, "__dict__"):
+        return vars(prompt)
+    return {}
+
+
+def _coerce_dim(value: Any, default: int) -> int:
+    try:
+        iv = int(value)
+    except (TypeError, ValueError):
+        return default
+    return iv if iv > 0 else default
+
+
 def ar2dit(
     source_outputs: list[Any],
     prompts: OmniTokensPrompt | TextPrompt | list[OmniTokensPrompt | TextPrompt] | None = None,
@@ -16,21 +39,33 @@ def ar2dit(
     """Convert AR stage outputs to DiT stage inputs."""
     ar_outputs = source_outputs
 
-    # Normalize prompts to list
+    # The shared text_to_image example forwards a single prompt (not a list); normalize
+    # so a lone dict isn't iterated as its keys. Mirrors glm_image.ar2diffusion.
     if not isinstance(prompts, list):
         prompts = [prompts] if prompts is not None else [{}]
 
     dit_inputs: list[OmniTokensPrompt] = []
-    for ar_output, prompt in zip(ar_outputs, prompts):
-        addi_info = prompt["additional_information"]
-        image_height = addi_info["image_height"][0]
-        image_width = addi_info["image_width"][0]
-        # Sampling knobs now arrive on the DiT stage via extra_body -> extra_args.
-        # Keep a legacy fallback to additional_information for the bespoke-example path;
-        # defaults below mirror the former bespoke script's argparse defaults.
-        text_guidance_scale = addi_info.get("text_guidance_scale", [9.0])[0]
-        cfg_range = addi_info.get("cfg_range", [0.0, 1.0])
-        num_inference_steps = addi_info.get("num_inference_steps", [50])[0]
+    for i, ar_output in enumerate(ar_outputs):
+        prompt_dict = _as_dict(prompts[i] if i < len(prompts) else {})
+        addi_info = prompt_dict.get("additional_information") or {}
+        mm_kwargs = prompt_dict.get("mm_processor_kwargs") or {}
+
+        # Image size: prefer mm_processor_kwargs target_h/target_w (set by the serving
+        # layer), fall back to additional_information, then a 1024 default.
+        image_height = _coerce_dim(
+            mm_kwargs.get("target_h"),
+            _coerce_dim((addi_info.get("image_height") or [None])[0], 1024),
+        )
+        image_width = _coerce_dim(
+            mm_kwargs.get("target_w"),
+            _coerce_dim((addi_info.get("image_width") or [None])[0], 1024),
+        )
+
+        # Sampling knobs arrive on the DiT stage via extra_body -> extra_args; these are
+        # defensive fallbacks (defaults mirror the former bespoke script's argparse).
+        text_guidance_scale = (addi_info.get("text_guidance_scale") or [9.0])[0]
+        cfg_range = addi_info.get("cfg_range") or [0.0, 1.0]
+        num_inference_steps = (addi_info.get("num_inference_steps") or [50])[0]
 
         prompt_token_ids = ar_output.prompt_token_ids
         # exclude the last token because it has no corresponding hidden state
