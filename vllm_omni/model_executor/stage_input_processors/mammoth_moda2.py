@@ -91,7 +91,9 @@ def ar2dit(
         # from the model config. Pass through the raw AR hidden states + token ids and
         # the question/answer boundary so the pipeline can reconstruct the masks.
         additional_information = {
-            "full_hidden_states": full_hidden_states,
+            # float32 so the tensor crosses the stage boundary (the serializer uses
+            # numpy, which has no bf16); the DiT re-casts to the model dtype.
+            "full_hidden_states": full_hidden_states.float().contiguous(),
             "full_token_ids": full_token_ids,
             "answer_start_index": [len(prompt_token_ids)],
             "image_height": [int(image_height)],
